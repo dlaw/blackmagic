@@ -61,10 +61,22 @@ enum iap_status lpc_iap_call(struct lpc_flash *f, void *result, enum iap_cmd cmd
 		.opcode = ARM_THUMB_BREAKPOINT,
 		.command = cmd,
 	};
+	uint32_t regs[t->regs_size / sizeof(uint32_t)];
 
 	/* Pet WDT before each IAP call, if it is on */
 	if (f->wdt_kick)
 		f->wdt_kick(t);
+
+	/* temporarily save iap ram to preserve user program data */
+	struct flash_param backup_param;
+	target_mem_read(t, &backup_param, f->iap_ram, sizeof(backup_param));
+
+	/* also temporarily save the values of r0 and r1 */
+	uint32_t backup_r0, backup_r1, backup_msp;
+	target_regs_read(t, regs);
+	backup_r0 = regs[0];
+	backup_r1 = regs[1];
+	backup_msp = regs[REG_MSP];
 
 	/* fill out the remainder of the parameters */
 	va_list ap;
@@ -77,8 +89,6 @@ enum iap_status lpc_iap_call(struct lpc_flash *f, void *result, enum iap_cmd cmd
 	target_mem_write(t, f->iap_ram, &param, sizeof(param));
 
 	/* set up for the call to the IAP ROM */
-	uint32_t regs[t->regs_size / sizeof(uint32_t)];
-	target_regs_read(t, regs);
 	regs[0] = f->iap_ram + offsetof(struct flash_param, command);
 	regs[1] = f->iap_ram + offsetof(struct flash_param, status);
 	regs[REG_MSP] = f->iap_msp;
@@ -92,6 +102,14 @@ enum iap_status lpc_iap_call(struct lpc_flash *f, void *result, enum iap_cmd cmd
 
 	/* copy back just the parameters structure */
 	target_mem_read(t, &param, f->iap_ram, sizeof(param));
+
+	/* restore the original data in IAP RAM and registers r0-r1 */
+	target_mem_write(t, f->iap_ram, &backup_param, sizeof(param));
+	target_regs_read(t, regs);
+	regs[0] = backup_r0;
+	regs[1] = backup_r1;
+	regs[REG_MSP] = backup_msp;
+	target_regs_write(t, regs);
 
 	/* if the user expected a result, set the result (16 bytes). */
 	if (result != NULL)
